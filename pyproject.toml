@@ -27,9 +27,9 @@ classifiers = [
 models = ["litellm==1.104.2"]
 
 [project.urls]
-Repository = "https://github.com/harinaralasetty/agent_relay"
-Documentation = "https://github.com/harinaralasetty/agent_relay#readme"
-Issues = "https://github.com/harinaralasetty/agent_relay/issues"
+Repository = "https://github.com/harinaralasetty/agent-relay"
+Documentation = "https://github.com/harinaralasetty/agent-relay#readme"
+Issues = "https://github.com/harinaralasetty/agent-relay/issues"
 
 [project.scripts]
 agent_relay = "agent_relay.cli:main"

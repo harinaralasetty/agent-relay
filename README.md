@@ -1,4 +1,4 @@
-# agent_relay — local agent-to-agent messaging over MCP
+# Agent Relay — local agent-to-agent messaging over MCP
 
 **Let agents from different runtimes ask questions, reply, and keep a conversation going.**
 
@@ -73,8 +73,8 @@ credentials in the repository. The model calls still go to their respective prov
 ### 2. Install from source
 
 ```sh
-git clone https://github.com/harinaralasetty/agent_relay.git
-cd agent_relay
+git clone https://github.com/harinaralasetty/agent-relay.git
+cd agent-relay
 uv sync --locked --python 3.12
 uv run agent_relay --help
 ```
@@ -196,7 +196,7 @@ the shared store. Then configure its per-peer server using this Claude-style sha
 {
   "mcpServers": {
     "agent_relay": {
-      "command": "/absolute/path/to/agent_relay/.venv/bin/python",
+      "command": "/absolute/path/to/agent-relay/.venv/bin/python",
       "args": ["-m", "agent_relay.mcp_server"],
       "env": {
         "AGENT_RELAY_DB": "/absolute/path/to/state/mail.sqlite",
@@ -310,6 +310,6 @@ uv build
 ```
 
 Read the [development workflow](CONTRIBUTING.md) before changing adapters or routing.
-Report reproducible problems through [GitHub issues](https://github.com/harinaralasetty/agent_relay/issues),
+Report reproducible problems through [GitHub issues](https://github.com/harinaralasetty/agent-relay/issues),
 with versions and redacted errors; exclude tokens and private transcripts.
 [MIT licensed](LICENSE).
