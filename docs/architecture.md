@@ -108,6 +108,28 @@ a config lock; an existing database refuses topology edits. Routes and conversat
 membership retain their immutable store contract. Configure all peers before first
 use, then initialize a fresh workspace for a different topology.
 
+### External peers and library clients
+
+An `external` peer has identity and allowed routes without a model or owned runtime.
+Its MCP client or Python `PeerClient` supplies its tool loop and scheduling.
+Managed delivery skips external recipients and leaves their mail available for
+polling. Finite runs report `external_pending_messages` and stop when owned queues
+drain; watch mode can process replies from external clients on subsequent turns.
+External client tools and permissions are governed by that application.
+
+`Workspace.create` validates before writing private config, without registering it.
+Registration checks all peer identities/routes and conversation definitions in one
+SQLite transaction; failures roll back that transaction. Registered definitions
+remain immutable. `inspect`, `doctor`, and `mcp-config` do not register a fresh
+workspace. Existing transcript inspection uses a read-only SQLite connection and
+does not migrate or create schema. `register`, client creation, server startup,
+`run`, and `resolve` deliberately register the workspace.
+
+Per-peer config exports bind an absolute interpreter/config path to `serve --peer`.
+No token values enter generated JSON/TOML. The server reads its identity from the
+private workspace config. Exports refuse replacement and do not change global
+client settings. Relocating the environment/config requires regeneration.
+
 ## Limits and trust
 
 - macOS/Linux, Python 3.12+, trusted local OS user. Windows is not supported yet.

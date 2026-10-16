@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent_relay"
-version = "0.2.1"
+dynamic = ["version"]
 description = "Local agent messaging over MCP for Codex CLI, Claude Code, and LiteLLM models"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{name = "Hari Naralasetty"}]
-dependencies = ["mcp>=1.20,<2"]
+dependencies = ["mcp>=1.30,<2"]
 
 keywords = ["agent-to-agent", "mcp", "codex", "claude-code", "multi-agent", "sqlite"]
 classifiers = [
@@ -20,6 +20,8 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
@@ -49,3 +51,6 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_relay"]
+
+[tool.hatch.version]
+path = "src/agent_relay/__init__.py"

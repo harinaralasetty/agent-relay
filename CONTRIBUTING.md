@@ -18,7 +18,7 @@ flowchart TD
     V --> Q{Confirmed issue?}
     Q -->|Yes| R
     Q -->|No| F[Fresh full checks and package build]
-    F --> P[Publish verified source]
+    F --> P[Review verified source and approve publication]
 ```
 
 ```sh
@@ -42,3 +42,14 @@ To add a runtime, implement `Runtime.start`, `turn`, and `close` from
 `src/agent_relay/runtime.py`. Return a stable resumable session ID and explicit errors.
 Add it to the CLI adapter registry and test the actual protocol, session resume,
 output bounds and owned-process cleanup. The mailbox does not need provider changes.
+
+## Installed-package qualification
+
+Source tests and editable installation do not establish that the wheel works.
+Build into a clean candidate directory, install that exact wheel into a fresh
+virtual environment, and run `scripts/qualify_install.py` with that interpreter.
+Use `--models` only in the separate installation containing the wheel's models
+extra. The qualifier checks the console entry point as well as module execution,
+version metadata, no-provider MCP operation, external setup, exports, and API use.
+See [release preparation](docs/releasing.md). Do not run publication workflows or
+push work unless the current task authorizes it.

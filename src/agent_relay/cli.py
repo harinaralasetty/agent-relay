@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import secrets
+import sqlite3
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -23,6 +24,7 @@ from agent_relay.peers import (
 from agent_relay.runtime import RuntimeConfig
 from agent_relay.store import Store
 from agent_relay.supervisor import Supervisor
+from agent_relay.workspace import PeerSpec, Workspace
 
 DEFAULT_CODEX_MODEL = "gpt-6-luna"
 DEFAULT_CLAUDE_MODEL = "haiku"
@@ -83,17 +85,15 @@ def load(path: Path) -> tuple[dict, Store]:
         config = json.loads(path.read_text())
         validate(config)
         store = Store(path.parent / "mail.sqlite")
-        for peer, definition in config["peers"].items():
-            store.register(peer, definition["token"], definition["allowed"])
-        store.conversation(
-            config["conversation_id"], list(config["peers"]), config.get("max_messages", 12)
-        )
+        store.register_workspace(config)
     return config, store
 
 
 def make_runtimes(config: dict, store: Store) -> dict:
     runtimes = {}
     for peer, definition in config["peers"].items():
+        if definition["runtime"] == "external":
+            continue
         workspace = store.path.parent / "workspaces" / peer
         workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         with store.connect() as db:
@@ -129,7 +129,9 @@ def make_runtimes(config: dict, store: Store) -> dict:
 def demo_prompt(config: dict, initiator: str) -> str:
     target = next(peer for peer in config["peers"] if peer != initiator)
     return (
-        f"In conversation {config['conversation_id']}, send {target} this small test request: "
+        "This is the initial turn; no received message is expected yet. "
+        f"Your first action is to call peer_send in conversation {config['conversation_id']} "
+        f"to send {target} this small test request: "
         f"{DEMO_TEXTS[0]!r} Use idempotency_key='start'. "
         "When you receive the clarification, reply exactly 'Add 2 and 3.' with its reply_to ID. "
         "When you receive 'The sum is 5.', reply exactly 'Verified: 5.' "
@@ -139,11 +141,53 @@ def demo_prompt(config: dict, initiator: str) -> str:
 
 
 async def run(path: Path, initial: dict[str, str] | None, watch: bool = False) -> dict:
+    workspace = Workspace(path)
+    definitions = json.loads(workspace.path.read_text())["peers"]
+    if any(
+        peer not in definitions or definitions[peer]["runtime"] == "external"
+        for peer in (initial or {})
+    ):
+        raise ValueError("Initial peer must have a configured managed runtime")
     config, store = load(path)
     supervisor = Supervisor(store, make_runtimes(config, store), **config.get("limits", {}))
     if watch:
-        return await supervisor.run_forever(initial)
-    return await supervisor.run_until_idle(initial)
+        report = await supervisor.run_forever(initial)
+    else:
+        report = await supervisor.run_until_idle(initial)
+    external = {peer for peer, d in config["peers"].items() if d["runtime"] == "external"}
+    report["external_pending_messages"] = [
+        message["id"]
+        for message in store.messages(config["conversation_id"])
+        if message["recipient"] in external and not message["acknowledged"]
+    ]
+    return report
+
+
+def initialize_peers(
+    directory: Path,
+    specifications: list[str],
+    conversation_id: str = "discussion",
+    max_messages: int = 32,
+) -> Path:
+    """Create a fully connected topology from explicit NAME=RUNTIME[:MODEL] specifications."""
+    peers = {}
+    for specification in specifications:
+        name, separator, value = specification.partition("=")
+        runtime, model_separator, model = value.partition(":")
+        if not separator or not name or not runtime or name in peers:
+            raise ValueError("Use distinct NAME=RUNTIME[:MODEL] peer specifications")
+        if (runtime == "external" and model_separator) or (
+            runtime != "external" and (not model_separator or not model)
+        ):
+            raise ValueError("External peers omit MODEL; managed peers require RUNTIME:MODEL")
+        peers[name] = PeerSpec(runtime=runtime, model=model if model_separator else None)
+    peers = {
+        name: replace(spec, allowed=tuple(target for target in peers if target != name))
+        for name, spec in peers.items()
+    }
+    return Workspace.create(
+        directory, peers, conversation_id=conversation_id, max_messages=max_messages
+    ).path
 
 
 def verify_demo(messages: list[dict]) -> bool:
@@ -171,6 +215,9 @@ def verify_demo(messages: list[dict]) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="agent_relay local agent conversations")
+    from agent_relay import __version__
+
+    parser.add_argument("--version", action="version", version=f"agent_relay {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Create private local config (never overwrites)")
     init.add_argument("directory", type=Path)
@@ -181,11 +228,19 @@ def main() -> None:
     )
     init.add_argument("--codex-model", default=DEFAULT_CODEX_MODEL)
     init.add_argument("--claude-model", default=DEFAULT_CLAUDE_MODEL)
+    init.add_argument(
+        "--peer",
+        action="append",
+        metavar="NAME=RUNTIME[:MODEL]",
+        help="Create named peers with mutual routes; repeat for at least two peers",
+    )
+    init.add_argument("--conversation-id", default=None)
+    init.add_argument("--max-messages", type=int, default=None)
     add = commands.add_parser("add-peer", help="Add a peer before workspace registration")
     add.add_argument("config", type=Path)
     add.add_argument("peer_id")
     add.add_argument("--runtime", choices=SUPPORTED_RUNTIMES, required=True)
-    add.add_argument("--model", required=True)
+    add.add_argument("--model", help="Required for managed runtimes; omit for external peers")
     add.add_argument("--allowed", nargs="+", required=True, metavar="PEER")
     add.add_argument("--reciprocal", action="store_true", help="Allow those peers to reply")
     add.add_argument("--api-key-env", help="Environment variable name; never the key itself")
@@ -194,6 +249,21 @@ def main() -> None:
     add.add_argument("--max-output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS)
     inspect = commands.add_parser("inspect", help="Print administrative mailbox transcript")
     inspect.add_argument("config", type=Path)
+    register = commands.add_parser(
+        "register", help="Atomically register and freeze workspace routes"
+    )
+    register.add_argument("config", type=Path)
+    serve = commands.add_parser("serve", help="Serve one configured peer over stdio MCP")
+    serve.add_argument("config", type=Path)
+    serve.add_argument("--peer", required=True)
+    export = commands.add_parser("mcp-config", help="Write token-free per-peer MCP client config")
+    export.add_argument("config", type=Path)
+    export.add_argument("--peer", required=True)
+    export.add_argument("--format", choices=["json", "codex"], default="json")
+    export.add_argument("--output", type=Path, required=True)
+    doctor_parser = commands.add_parser("doctor", help="Read-only setup diagnosis; no model calls")
+    doctor_parser.add_argument("config", type=Path, nargs="?")
+    commands.add_parser("self-check", help="Exercise real MCP locally without provider accounts")
     resolve = commands.add_parser("resolve", help="Record reviewed uncertain outcome; never retry")
     resolve.add_argument("config", type=Path)
     resolve.add_argument("message_id")
@@ -223,7 +293,18 @@ def main() -> None:
 
             mcp_main()
         elif args.command == "init":
-            if args.manager:
+            if args.peer:
+                if args.manager:
+                    parser.error("Use --peer or the preset option, not both")
+                path = initialize_peers(
+                    args.directory,
+                    args.peer,
+                    args.conversation_id or "discussion",
+                    args.max_messages if args.max_messages is not None else 32,
+                )
+            elif args.conversation_id is not None or args.max_messages is not None:
+                parser.error("Use --peer when selecting a conversation ID or message limit")
+            elif args.manager:
                 path = initialize_delegation(
                     args.directory,
                     args.manager,
@@ -249,8 +330,38 @@ def main() -> None:
             )
             print(f"Added {args.peer_id} ({args.runtime}); routes configured")
         elif args.command == "inspect":
-            config, store = load(args.config)
-            print(json.dumps(store.messages(config["conversation_id"]), indent=2))
+            print(json.dumps(Workspace(args.config).messages(), indent=2))
+        elif args.command == "register":
+            Workspace(args.config).register()
+            print(json.dumps({"registered": True}))
+        elif args.command == "serve":
+            from agent_relay.mcp_server import create_server
+
+            client = Workspace(args.config).client(args.peer)
+            create_server(
+                str(client._store.path),
+                args.peer,
+                client._token,
+                conversation_id=client._conversation_id,
+            ).run(transport="stdio")
+        elif args.command == "mcp-config":
+            print(
+                Workspace(args.config).mcp_config(args.peer, format=args.format, output=args.output)
+            )
+        elif args.command == "doctor":
+            from agent_relay.diagnostics import doctor
+
+            report = doctor(args.config)
+            print(json.dumps(report, indent=2))
+            if not report["ok"]:
+                raise SystemExit(1)
+        elif args.command == "self-check":
+            from agent_relay.diagnostics import self_check
+
+            report = asyncio.run(self_check())
+            print(json.dumps(report, indent=2))
+            if not report["ok"]:
+                raise SystemExit(1)
         elif args.command == "resolve":
             _, store = load(args.config)
             store.resolve(args.message_id, args.outcome)
@@ -283,6 +394,9 @@ def main() -> None:
             print(json.dumps(report, indent=2))
             if report["errors"]:
                 raise SystemExit(1)
+    except sqlite3.Error:
+        print("agent_relay: Mailbox database could not be read or updated", file=sys.stderr)
+        raise SystemExit(1) from None
     except (ValueError, OSError) as exc:
         print(f"agent_relay: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1) from None

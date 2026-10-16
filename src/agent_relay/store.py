@@ -30,6 +30,7 @@ def identifier(value: str) -> str:
 class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
+        self._read_only = False
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
         os.close(fd)
@@ -55,9 +56,22 @@ class Store:
                 CREATE INDEX IF NOT EXISTS inbox ON messages(recipient, status, seq);
             """)
 
+    @classmethod
+    def open_existing(cls, path: str | Path, *, read_only: bool = False) -> "Store":
+        """Open an existing mailbox without creating files or changing its schema."""
+        store = cls.__new__(cls)
+        store.path = Path(path).expanduser().resolve()
+        if not store.path.is_file():
+            raise FileNotFoundError("Mailbox is not registered; register the workspace first")
+        store._read_only = read_only
+        return store
+
     @contextmanager
     def connect(self, *, write: bool = False):
-        db = sqlite3.connect(self.path, timeout=10)
+        if self._read_only and write:
+            raise CourierError("Mailbox was opened read-only")
+        mode = "ro" if self._read_only else "rw"
+        db = sqlite3.connect(self.path.as_uri() + f"?mode={mode}", uri=True, timeout=10)
         db.row_factory = sqlite3.Row
         try:
             if write:
@@ -87,6 +101,11 @@ class Store:
         return result
 
     def register(self, peer: str, token: str, allowed: list[str]) -> None:
+        with self.connect(write=True) as db:
+            self._register(db, peer, token, allowed)
+
+    @staticmethod
+    def _register(db, peer: str, token: str, allowed: list[str]) -> None:
         identifier(peer)
         for target in allowed:
             identifier(target)
@@ -94,38 +113,51 @@ class Store:
             raise CourierError("Invalid registration")
         digest = hashlib.sha256(token.encode()).hexdigest()
         routes = json.dumps(sorted(set(allowed)))
-        with self.connect(write=True) as db:
-            previous = db.execute("SELECT * FROM peers WHERE id=?", (peer,)).fetchone()
-            if previous:
-                if previous["token_hash"] != digest or previous["allowed"] != routes:
-                    raise CourierError(
-                        "Peer already registered with a different identity or routes"
-                    )
-                return
-            db.execute(
-                "INSERT INTO peers(id,token_hash,allowed) VALUES (?,?,?)", (peer, digest, routes)
-            )
+        previous = db.execute("SELECT * FROM peers WHERE id=?", (peer,)).fetchone()
+        if previous:
+            if previous["token_hash"] != digest or previous["allowed"] != routes:
+                raise CourierError("Peer already registered with a different identity or routes")
+            return
+        db.execute(
+            "INSERT INTO peers(id,token_hash,allowed) VALUES (?,?,?)", (peer, digest, routes)
+        )
 
     def conversation(self, name: str, participants: list[str], max_messages: int = 12) -> None:
+        with self.connect(write=True) as db:
+            self._conversation(db, name, participants, max_messages)
+
+    @staticmethod
+    def _conversation(db, name: str, participants: list[str], max_messages: int) -> None:
         identifier(name)
         participants = sorted(set(participants))
         if len(participants) < 2 or not 1 <= max_messages <= MAX_MESSAGES:
             raise CourierError("Invalid participants or message limit")
+        for peer in participants:
+            if not db.execute("SELECT 1 FROM peers WHERE id=?", (peer,)).fetchone():
+                raise CourierError("Unknown participant")
+        previous = db.execute("SELECT * FROM conversations WHERE id=?", (name,)).fetchone()
+        if previous:
+            if (
+                previous["participants"] != json.dumps(participants)
+                or previous["max_messages"] != max_messages
+            ):
+                raise CourierError("Conversation already exists with a different definition")
+            return
+        db.execute(
+            "INSERT INTO conversations(id,participants,max_messages) VALUES (?,?,?)",
+            (name, json.dumps(participants), max_messages),
+        )
+
+    def register_workspace(self, config: dict) -> None:
+        """Register the entire validated topology atomically, preserving existing definitions."""
+        from agent_relay.peers import validate
+
+        validate(config)
         with self.connect(write=True) as db:
-            for peer in participants:
-                if not db.execute("SELECT 1 FROM peers WHERE id=?", (peer,)).fetchone():
-                    raise CourierError("Unknown participant")
-            previous = db.execute("SELECT * FROM conversations WHERE id=?", (name,)).fetchone()
-            if previous:
-                if (
-                    previous["participants"] != json.dumps(participants)
-                    or previous["max_messages"] != max_messages
-                ):
-                    raise CourierError("Conversation already exists with a different definition")
-                return
-            db.execute(
-                "INSERT INTO conversations(id,participants,max_messages) VALUES (?,?,?)",
-                (name, json.dumps(participants), max_messages),
+            for peer, definition in config["peers"].items():
+                self._register(db, peer, definition["token"], definition["allowed"])
+            self._conversation(
+                db, config["conversation_id"], list(config["peers"]), config.get("max_messages", 12)
             )
 
     def peers(self, peer: str, token: str) -> list[dict]:

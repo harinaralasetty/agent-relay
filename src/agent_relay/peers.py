@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from agent_relay.runtime import DEFAULT_OUTPUT_TOKENS, DEFAULT_TOOL_ROUNDS
 from agent_relay.store import MAX_MESSAGES, identifier
 
-SUPPORTED_RUNTIMES = ("codex", "claude", "litellm")
+SUPPORTED_RUNTIMES = ("codex", "claude", "litellm", "external")
 MAX_TOOL_ROUNDS = 64
 MAX_OUTPUT_TOKENS = 32768
 
@@ -56,12 +56,27 @@ def validate(config: dict) -> None:
     for peer, definition in peers.items():
         identifier(peer)
         if not isinstance(definition, dict) or definition.get("runtime") not in SUPPORTED_RUNTIMES:
-            raise ValueError("Supported runtime adapters: codex, claude, litellm")
+            raise ValueError("Supported runtimes: codex, claude, litellm, external")
+        common = {"runtime", "token", "allowed", "timeout"}
+        specific = (
+            set()
+            if definition["runtime"] == "external"
+            else {"model", "executable"}
+            if definition["runtime"] in {"codex", "claude"}
+            else {"model", "api_key_env", "api_base", "max_tool_rounds", "max_output_tokens"}
+        )
+        if "api_key" in definition:
+            raise ValueError("Use an API key environment variable name, never a key in config")
+        if definition.keys() - common - specific:
+            raise ValueError("Unknown or unsupported options for this runtime")
+        required = ("token",) if definition["runtime"] == "external" else ("model", "token")
         if any(
-            not isinstance(definition.get(k), str) or not definition[k].strip()
-            for k in ("model", "token")
+            not isinstance(definition.get(k), str) or not definition[k].strip() for k in required
         ):
-            raise ValueError("Every peer needs a model and a private token")
+            raise ValueError("Every peer needs a private token; managed peers also need a model")
+        executable = definition.get("executable")
+        if executable is not None and (not isinstance(executable, str) or not executable.strip()):
+            raise ValueError("Executable must be a nonempty path or command name")
         allowed = definition.get("allowed")
         if (
             not isinstance(allowed, list)
@@ -80,11 +95,7 @@ def validate(config: dict) -> None:
             or timeout <= 0
         ):
             raise ValueError("Timeout must be a positive finite number")
-        if "api_key" in definition:
-            raise ValueError("Use an API key environment variable name, never a key in config")
         if definition["runtime"] != "litellm":
-            if any(k in definition for k in ("api_key_env", "api_base")):
-                raise ValueError("API options require the litellm runtime")
             continue
         name = definition.get("api_key_env")
         if name is not None and (
@@ -119,7 +130,7 @@ def add_peer(
     path: Path,
     peer_id: str,
     runtime: str,
-    model: str,
+    model: str | None,
     allowed: list[str],
     *,
     reciprocal: bool = False,
@@ -138,10 +149,11 @@ def add_peer(
             raise ValueError("Peer already exists")
         definition = {
             "runtime": runtime,
-            "model": model,
             "token": secrets.token_urlsafe(32),
             "allowed": allowed,
         }
+        if model is not None:
+            definition["model"] = model
         if api_key_env is not None:
             definition["api_key_env"] = api_key_env
         if api_base is not None:

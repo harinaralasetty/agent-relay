@@ -17,3 +17,6 @@ dist/
 .agent_relay/
 .agent_relay-litellm/
 .agentrelay-litellm/
+
+.wheel-venv/
+.models-wheel/

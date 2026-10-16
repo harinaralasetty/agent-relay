@@ -170,3 +170,64 @@ Both live demos exited 0 without runtime errors or unresolved deliveries. The
 resume probes called `peer_list` and sent no messages. The provider accounts,
 models and CLI versions are unchanged. Old private history and state locations
 remain ignored; published documentation uses only the current public identity.
+
+## Local adoption draft qualification — 10 October 2026
+
+Draft version **0.3.0a1** adds a public Python API, external MCP peers, generic
+workspace setup, read-only diagnostics and a provider-free protocol check. These
+changes were local at the time; no package upload or release was performed.
+
+| Check | Observed result |
+|---|---|
+| Source suite with optional SDK, Python 3.12.13 | 155 passed in 18.48s |
+| Installed base wheel, clean Python 3.12.13 environment | 151 passed; 4 SDK-dependent tests skipped |
+| Installed optional wheel, clean Python 3.13.4 environment | 155 passed; LiteLLM 1.104.2 present |
+| Installed package qualification in both environments | Metadata/version, console entry point, real MCP self-check, external setup, read-only inspection/doctor, exported MCP startup and Python API passed |
+| Provider-free qualification | Zero model calls; actual temporary stdio MCP processes used |
+| Live Claude-initiated exchange | Five exact linked messages, all recipient ACKs, three successful turns per peer; exit 0 |
+| Live Codex-initiated fresh follow-up | Five exact linked messages, all recipient ACKs, three successful turns per peer; exit 0 |
+| Independent implementation/package reviews | Confirmed findings fixed and re-reviewed; no remaining concrete finding in reviewed scope |
+| Local workflow checks | YAML parsed; manual/TestPyPI default, scoped permissions and explicit tag/commit guards verified statically |
+
+Three live CLI attempts were made: **one Codex initiation failure followed by two
+passes**, one for each initiator. The failed attempt read an empty inbox and sent
+nothing; the demo correctly exited 1. Initial-task instructions were clarified,
+and the successful follow-up used a new workspace. No uncertain delivery was
+retried. Both successful exchanges kept one provider session per peer. This is
+smoke evidence for the specific task, not an arbitrary-task success rate.
+
+The fix loop also covered interpreter symlinks in exported MCP configs, corrupt
+database errors, configuration/identity validation before mutation, atomic
+registration rollback, existing-directory permission preservation, pending
+external delivery ownership, configured CLI executable diagnostics, MCP peer and
+conversation context, and refusal to create a missing low-level MCP database.
+Regression tests exercise actual MCP startup where relevant.
+
+A clean installation with MCP 1.20 and current Pydantic failed during import.
+The declared SDK floor is now the qualified MCP 1.30. The release workflow's
+unqualified ref could select a same-named branch; checkout now explicitly selects
+`refs/tags/...` and compares HEAD with the tag's peeled commit before building.
+
+External clients own their scheduling and permissions; these tools do not
+implicitly attach to an existing desktop chat or wake an idle agent. API tokens
+identify peers within a trusted local workspace, not hostile OS users. Real
+third-provider models, Windows support, large-team load, the new remote CI jobs,
+Trusted Publisher/environment configuration, and PyPI/TestPyPI publication were
+not tested or performed. The optional SDK's local-endpoint protocol tests do not
+establish third-provider reasoning or billing compatibility.
+
+## Pre-push re-check — 16 October 2026
+
+Before the 0.3.0a1 source push, the draft was re-checked on macOS without provider calls.
+
+| Check | Observed result |
+|---|---|
+| Source suite, Python 3.12 and 3.13, base and `models` extra | 151 passed with 4 SDK skips (base); 155 passed (`models`) |
+| Lint and format | `ruff check` and `ruff format --check` clean in all four environments |
+| Build and metadata | Wheel and source archive built; `twine check` passed |
+| Clean installs | `scripts/qualify_install.py` passed for the base wheel (3.12) and the `models` wheel (3.13) |
+| README external-client path | `init --peer`, JSON and Codex TOML exports, overwrite refusal, `0600` modes, no tokens in exports, TOML-configured server answered `peer_list` |
+| Compatibility | Configs and a registered mailbox created by 0.2.1 validated, inspected, registered and exported under 0.3.0a1 |
+
+One base-suite run out of about twenty failed and did not reproduce in later
+sequential, fresh-environment or concurrent runs; the failing test was not captured.

@@ -17,3 +17,14 @@ jobs:
       - run: uv run ${{ matrix.extra }} ruff format --check .
       - run: uv run ${{ matrix.extra }} pytest -q
       - run: uv build
+      - name: Qualify a clean wheel installation
+        run: |
+          uv venv .wheel-venv --python '${{ matrix.python-version }}'
+          relay_wheel_path=$(python -c 'import glob; paths=glob.glob("dist/*.whl"); assert len(paths)==1; print(paths[0])')
+          if [ '${{ matrix.extra }}' = '--extra models' ]; then
+            uv pip install --python .wheel-venv/bin/python "$relay_wheel_path[models]"
+            .wheel-venv/bin/python scripts/qualify_install.py --models
+          else
+            uv pip install --python .wheel-venv/bin/python "$relay_wheel_path"
+            .wheel-venv/bin/python scripts/qualify_install.py
+          fi

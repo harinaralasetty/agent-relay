@@ -76,3 +76,26 @@ async def test_invalid_mcp_identity_cannot_read_mail(tmp_path):
             result = await session.call_tool("peer_inbox", {})
             assert result.isError
             assert "correct-secret" not in str(result)
+
+
+def test_missing_mcp_database_is_not_created_and_errors_exclude_token(tmp_path):
+    import os
+    import subprocess
+
+    path = tmp_path / "missing.sqlite"
+    result = subprocess.run(
+        [sys.executable, "-m", "agent_relay", "mcp"],
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={
+            **os.environ,
+            "AGENT_RELAY_DB": str(path),
+            "AGENT_RELAY_PEER": "alpha",
+            "AGENT_RELAY_TOKEN": "private-token-not-for-output",
+        },
+    )
+    assert result.returncode == 1
+    assert not path.exists()
+    assert "private-token-not-for-output" not in result.stdout + result.stderr

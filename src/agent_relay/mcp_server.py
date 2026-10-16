@@ -4,14 +4,23 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
-from agent_relay.store import Store
+from agent_relay.store import Store, identifier
 
 
-def create_server(path: str, peer: str, token: str) -> FastMCP:
-    store = Store(path)
+def create_server(
+    path: str, peer: str, token: str, *, conversation_id: str | None = None
+) -> FastMCP:
+    store = Store.open_existing(path)
+    context = (
+        f"Your peer identity is {identifier(peer)}; "
+        f"use conversation_id={identifier(conversation_id)}. "
+        if conversation_id is not None
+        else ""
+    )
     server = FastMCP(
         "agent_relay",
-        instructions=(
+        instructions=context
+        + (
             "Use explicit peer_send for messages. It stores a message without waiting for a reply. "
             "Use unique idempotency keys and reply_to IDs. Acknowledge messages with peer_ack. "
             "Send final=true to close a conversation; do not answer a final message. "

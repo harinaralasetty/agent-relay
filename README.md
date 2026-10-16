@@ -21,6 +21,8 @@ repository. **Install from this repository; no PyPI release is published for thi
 
 [Quick start](#quick-start-connect-codex-cli-and-claude-code) ·
 [Your own conversation](#start-your-own-conversation) ·
+[External MCP clients](#connect-your-own-mcp-clients) ·
+[Python API](#use-it-as-a-python-library) ·
 [MCP tools](#mcp-tools-and-other-runtimes) ·
 [More models and agents](#use-other-models-and-agent-applications) ·
 [Limitations](#limitations-and-permissions) ·
@@ -36,7 +38,9 @@ repository. **Install from this repository; no PyPI release is published for thi
 | Controlled routing | Each peer has its own identity/token, permitted recipients, and conversation membership |
 | Duplicate protection | Reusing an idempotency key with the same message returns the original; conflicting reuse fails |
 | Delivery supervision | Idle managed peers receive input; each peer's turns are serialized |
-| Provider-neutral interface | Other runtimes can use the five MCP tools or implement a runtime adapter |
+| Provider-neutral interface | External MCP clients use the same five tools; managed runtimes can implement an adapter |
+| Python library | Create a workspace and use identity-bound mailbox clients from your own code |
+| Account-free setup check | Exercise two real MCP servers without a model, account, or API key |
 | Optional API models | LiteLLM supplies inference; agent_relay provides the bounded MCP tool loop and history |
 
 The included adapters run **managed sessions**, separate from existing desktop chats
@@ -60,15 +64,11 @@ and optional runtime delivery components.
 
 - **macOS or Linux** and **Python 3.12+**. Windows is not currently supported.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) for the Python environment.
-- Installed, authenticated [Codex CLI](https://learn.chatgpt.com/codex) and
-  [Claude Code](https://code.claude.com/docs/en/overview).
-- Access to the models you select in each CLI account. Desktop model availability
-  can differ from CLI availability.
-
-Check that `uv --version`, `codex --version`, and `claude --version` work in your
-terminal. Follow each provider's sign-in instructions before running the demo.
-agent_relay uses those local CLI logins; it does not supply or store provider
-credentials in the repository. The model calls still go to their respective providers.
+You can install the package, use the Python API, and check the mailbox without
+provider accounts. The live CLI example below additionally needs installed,
+authenticated [Codex CLI](https://learn.chatgpt.com/codex) and
+[Claude Code](https://code.claude.com/docs/en/overview), with access to the models
+you select. Desktop and CLI model availability can differ.
 
 ### 2. Install from source
 
@@ -79,9 +79,38 @@ uv sync --locked --python 3.12
 uv run agent_relay --help
 ```
 
-No PyPI release of `agent_relay` is claimed. You can also build a local wheel with `uv build`.
+For an installed command in an isolated environment, run this from the checkout:
 
-### 3. Run a small live conversation
+```sh
+uv tool install --python 3.12 .
+agent_relay --version
+```
+
+If your tool directory is not on `PATH`, follow [uv's tool setup](https://docs.astral.sh/uv/guides/tools/).
+For a distributable Python package, `uv build` produces a wheel and source archive;
+install the wheel in a Python 3.12+ environment with `pip install /path/to/the.whl`.
+The optional API runtime uses the `models` extra. See [release preparation](docs/releasing.md)
+for clean-install checks and future PyPI publication.
+
+### 3. Check your installation without calling a model
+
+```sh
+uv run agent_relay doctor
+uv run agent_relay self-check
+```
+
+`doctor` reports local prerequisites; pass a config path to check its selected
+runtimes, credential-variable presence, and private-file permissions. It does not
+launch providers, verify account authentication, or change configuration.
+`self-check` starts two real stdio MCP servers in temporary state and checks the
+mailbox protocol. It prints `"ok": true` and `"provider_calls": 0` on success, cleans
+up its state, and needs no Codex, Claude, or LiteLLM installation. This is a local
+protocol check, not a provider compatibility test.
+
+### 4. Run a small live conversation
+
+Check that `codex --version` and `claude --version` work and sign in to both CLIs.
+agent_relay uses their local logins; model calls go to their respective providers.
 
 ```sh
 uv run agent_relay demo .agent_relay/first --initiator cedar \
@@ -158,6 +187,89 @@ The cost setting uses Claude's budget/reporting; **it does not impose a Codex or
 LiteLLM dollar cap**. API calls use token, round, and time limits instead.
 See the [delivery and budget contract](docs/architecture.md#limits-and-trust).
 
+## Connect your own MCP clients
+
+Use this path for agents you start yourself, including existing CLI/IDE workflows.
+Create named external peers without selecting a model:
+
+```sh
+uv run agent_relay init .agent_relay/external \
+  --peer alpha=external --peer beta=external --conversation-id review
+uv run agent_relay mcp-config .agent_relay/external/config.json \
+  --peer alpha --output .agent_relay/external/alpha.mcp.json
+uv run agent_relay mcp-config .agent_relay/external/config.json \
+  --peer beta --format codex --output .agent_relay/external/beta.mcp.toml
+```
+
+The generic `init --peer` path creates mutual routes among the explicitly named
+peers. Use `NAME=codex:MODEL`, `NAME=claude:MODEL`, or `NAME=litellm:PROVIDER/MODEL`
+for managed peers. Configure narrower routes and API options before registration,
+or use the Python API below to specify allowed recipients directly.
+
+The JSON output has Claude's `mcpServers` shape; start Claude with
+`claude --mcp-config .agent_relay/external/alpha.mcp.json`. The TOML output is a
+`[mcp_servers.agent_relay]` stanza for Codex: review and merge it into your selected
+Codex configuration without overwriting other entries. Other MCP clients can use
+the same stdio command and arguments. See the providers' configuration instructions
+for [Claude](https://code.claude.com/docs/en/mcp) and
+[Codex](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
+Exports contain absolute paths to the installed interpreter and private workspace,
+with **no token values**. They are written with mode `0600` and refuse overwrites.
+They do not edit global client settings. Regenerate exports if you move or replace
+the Python installation or workspace. The workspace's `config.json` contains tokens;
+keep it private and out of Git.
+
+Server startup registers the workspace atomically. To register deliberately before
+connecting a client, run `agent_relay register CONFIG`. Registration freezes routes
+and membership; `inspect`, `doctor`, and `mcp-config` do not register a fresh workspace.
+
+Give each client its peer identity and conversation ID `review`. Ask it to discover
+its peers, send explicit messages, read its inbox, ACK received messages, and link
+replies using `reply_to`. **External clients own their tool loop and scheduling:**
+mailbox messages do not automatically wake them. External clients retain their own
+tool and permission policies. In mixed workspaces, `run --watch` delivers to owned
+runtimes; `external_pending_messages` lists unacknowledged messages awaiting external
+clients. A finite `run` stops when its owned queues drain.
+
+## Use it as a Python library
+
+The package exports `Workspace`, `PeerSpec`, and `PeerClient`. This example needs no
+model or external account:
+
+```python
+from agent_relay import PeerSpec, Workspace
+
+relay = Workspace.create(
+    ".agent_relay/python-example",
+    {
+        "alpha": PeerSpec(allowed=("beta",)),
+        "beta": PeerSpec(allowed=("alpha",)),
+    },
+    conversation_id="review",
+)
+alpha, beta = relay.client("alpha"), relay.client("beta")
+message = alpha.send("beta", "Review this proposal.", idempotency_key="proposal-1")
+received = beta.inbox()[0]
+beta.ack(received["id"])
+beta.send(
+    "alpha",
+    "Please clarify the expected input.",
+    idempotency_key="clarification-1",
+    reply_to=message["id"],
+)
+```
+
+`Workspace.create` writes config without creating a mailbox. `client` or explicit
+`register` registers it; `Workspace(CONFIG)` reopens it. `PeerClient` binds identity
+and conversation and offers `peers`, `send`, `inbox`, `ack`, and `status`.
+`relay.messages()` reads an administrative transcript without registering or launching
+providers. ACKs establish receipt, not answer correctness. `final=True` closes the
+whole conversation, so collect outstanding replies first.
+
+See the [Python API guide](docs/python-api.md) and run
+`uv run python examples/python_exchange.py` for a complete local exchange.
+
 ## Delivery failures and recovery
 
 Delivery and acknowledgment are separate. `completed` means the provider returned
@@ -189,8 +301,9 @@ Each registered peer receives the same tools through its own stdio MCP server:
 | `peer_status` | Check delivery state separately from acknowledgment |
 
 All three managed adapters configure MCP automatically. For another
-MCP-capable client, first register its identity, allowed routes, and conversation in
-the shared store. Then configure its per-peer server using this Claude-style shape:
+MCP-capable client, use [external-peer setup](#connect-your-own-mcp-clients) to
+create its identity and generate configuration. Low-level integrations may also use
+this environment-based server shape after deliberate registration:
 
 ```json
 {
@@ -223,7 +336,7 @@ therefore does not automatically run every model or wake an idle agent.
 | What you want to add | Current path |
 |---|---|
 | Another model supported by Codex CLI or Claude Code | Choose its model ID using `--codex-model` / `--claude-model` during initialization, or edit a peer's `model` before its first run |
-| Another MCP-capable agent application | Register its peer identity/routes/conversation and connect it to its per-peer stdio MCP server; this is currently an advanced integration, without a one-command attach workflow |
+| Another MCP-capable agent application | Use `init --peer NAME=external` and `mcp-config`; the application owns its polling and permissions |
 | A tool-calling API or local model | Install the optional `models` extra and add a `litellm` peer as below |
 
 ### Add an API model with LiteLLM
@@ -255,8 +368,9 @@ sets whom the new peer may message; `--reciprocal` lets those peers reply. Every
 can initiate using `run --peer PEER_ID --prompt ...`.
 `add-peer` also accepts `--runtime codex` or `claude` for more CLI peers.
 
-Add peers **before the first `run`, `inspect`, or `resolve`**. Those commands register
-the mailbox, after which routes and conversation membership are immutable. Create
+Add peers **before registration, server startup, `run`, or `resolve`**. Those commands register
+the mailbox, after which routes and conversation membership are immutable.
+Read-only `inspect`, `doctor`, and config exports do not freeze a fresh workspace. Create
 a fresh state directory to change the topology. The command refuses duplicate
 peers and writes private configuration atomically.
 
@@ -282,9 +396,9 @@ or model; test your chosen endpoint with a small conversation first.
 
 ## Limitations and permissions
 
-- **No arbitrary desktop attachment:** existing Codex/Claude chats and native
-  subagents are not automatically connected. Native parent-to-child relay remains
-  an extension point.
+- **Client configuration is required:** you can connect an MCP-capable CLI or IDE
+  using exported config, but existing chats and native children are not automatically
+  discovered or awakened. Native parent-to-child relay remains an extension point.
 - **Limited task tools:** the included adapters disable unrelated coding, shell,
   browsing, application, and MCP tools. Peer messages do not grant permissions.
   Codex's read-only sandbox still permits file reads; use synthetic workspaces.

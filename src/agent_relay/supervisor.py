@@ -14,6 +14,7 @@ PEER_CONTEXT = (
     "Always preserve conversation_id and use reply_to for replies. "
     "Use a distinct idempotency_key for each logical send. "
     "Read the received message and call peer_ack with its ID. "
+    "For an initial task, follow its explicit send instructions even if the inbox is empty. "
     "After handling currently available input, return; do not poll or wait for future replies. "
     "The supervisor will supply new messages in a later turn. "
     "For final=true messages, acknowledge and stop; never reply. "
@@ -69,7 +70,8 @@ class Supervisor:
                 await runtime.start()
                 self._started.add(peer)
                 self.store.peer_state(peer, "working", runtime.session_id)
-            result = await runtime.turn(PEER_CONTEXT + "\n\n" + prompt)
+            task_label = "Initial task:\n" if message is None else ""
+            result = await runtime.turn(PEER_CONTEXT + "\n\n" + task_label + prompt)
             self.outputs.append(
                 {
                     "peer": peer,
